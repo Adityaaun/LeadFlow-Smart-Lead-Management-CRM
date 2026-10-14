@@ -13,30 +13,54 @@ from backend.app.schemas.lead import (
 from backend.app.schemas.discussion import DiscussionCreate, DiscussionResponse
 
 
+def _safe_dt_compare_past(dt: datetime, ref_now: datetime) -> bool:
+    """Compare datetime against reference now safely handling naive and aware datetimes."""
+    if dt.tzinfo is not None and ref_now.tzinfo is None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    elif dt.tzinfo is None and ref_now.tzinfo is not None:
+        ref_now = ref_now.astimezone().replace(tzinfo=None)
+    return dt < ref_now
+
+
+def _safe_dt_is_today(dt: datetime, today_date: date) -> bool:
+    """Check if datetime falls on today_date in local time."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.date() == today_date
+
+
 def _derive_lead_metadata(lead: Lead) -> dict:
-    """Derive last note, note timestamp, next follow-up, and is_today_follow_up."""
+    """Derive last note, note timestamp, next follow-up, is_today_follow_up, and is_overdue."""
     last_note = None
     last_note_created_at = None
     next_follow_up = None
     is_today = False
+    is_overdue = False
 
-    today_date = datetime.now().date()
+    now = datetime.now()
+    today_date = now.date()
+    is_actionable = lead.status not in (LeadStatus.WON, LeadStatus.LOST)
 
     if lead.discussions:
-        # Sort discussions by created_at descending
+        # Sort discussions by created_at descending, tie-breaking by id descending
         sorted_discussions = sorted(
-            lead.discussions, key=lambda d: d.created_at, reverse=True
+            lead.discussions,
+            key=lambda d: (d.created_at or datetime.min, d.id or 0),
+            reverse=True,
         )
         latest_disc = sorted_discussions[0]
         last_note = latest_disc.note
         last_note_created_at = latest_disc.created_at
 
-        # Find the most relevant upcoming or scheduled follow-up
+        # Find the most relevant scheduled follow-up
         for d in sorted_discussions:
             if d.follow_up_at:
                 next_follow_up = d.follow_up_at
-                if d.follow_up_at.date() == today_date:
-                    is_today = True
+                if is_actionable:
+                    if _safe_dt_is_today(d.follow_up_at, today_date):
+                        is_today = True
+                    if _safe_dt_compare_past(d.follow_up_at, now):
+                        is_overdue = True
                 break
 
     return {
@@ -44,6 +68,7 @@ def _derive_lead_metadata(lead: Lead) -> dict:
         "last_note_created_at": last_note_created_at,
         "next_follow_up": next_follow_up,
         "is_today_follow_up": is_today,
+        "is_overdue": is_overdue,
     }
 
 
@@ -94,24 +119,26 @@ def get_leads(
                 last_note_created_at=meta["last_note_created_at"],
                 next_follow_up=meta["next_follow_up"],
                 is_today_follow_up=meta["is_today_follow_up"],
+                is_overdue=meta["is_overdue"],
             )
         )
     return result
 
 
 def get_today_followups(db: Session) -> List[LeadListItem]:
-    """Retrieve leads that have follow-ups scheduled for today."""
+    """Retrieve active leads that have follow-ups scheduled for today (excluding Won and Lost)."""
     today = datetime.now().date()
     start_of_day = datetime.combine(today, time.min)
     end_of_day = datetime.combine(today, time.max)
 
-    # Find leads with discussions having follow_up_at today
+    # Find leads with discussions having follow_up_at today, excluding completed/lost leads
     leads = (
         db.query(Lead)
         .join(Discussion)
         .filter(
             Discussion.follow_up_at >= start_of_day,
             Discussion.follow_up_at <= end_of_day,
+            Lead.status.notin_([LeadStatus.WON, LeadStatus.LOST]),
         )
         .options(joinedload(Lead.discussions))
         .distinct()
@@ -134,13 +161,14 @@ def get_today_followups(db: Session) -> List[LeadListItem]:
                 last_note_created_at=meta["last_note_created_at"],
                 next_follow_up=meta["next_follow_up"],
                 is_today_follow_up=True,
+                is_overdue=meta["is_overdue"],
             )
         )
     return result
 
 
 def get_lead_by_id(db: Session, lead_id: int) -> Optional[LeadDetail]:
-    """Retrieve a single lead with full discussion timeline."""
+    """Retrieve a single lead with full discussion timeline and overdue markers."""
     lead = (
         db.query(Lead)
         .options(joinedload(Lead.discussions))
@@ -151,14 +179,30 @@ def get_lead_by_id(db: Session, lead_id: int) -> Optional[LeadDetail]:
         return None
 
     meta = _derive_lead_metadata(lead)
+    now = datetime.now()
+    is_actionable = lead.status not in (LeadStatus.WON, LeadStatus.LOST)
 
     # Discussions ordered chronologically descending (latest first)
     discussions_sorted = sorted(
-        lead.discussions, key=lambda d: d.created_at, reverse=True
+        lead.discussions,
+        key=lambda d: (d.created_at or datetime.min, d.id or 0),
+        reverse=True,
     )
-    disc_responses = [
-        DiscussionResponse.model_validate(d) for d in discussions_sorted
-    ]
+    disc_responses: List[DiscussionResponse] = []
+    for d in discussions_sorted:
+        d_overdue = False
+        if d.follow_up_at and is_actionable:
+            d_overdue = _safe_dt_compare_past(d.follow_up_at, now)
+        disc_responses.append(
+            DiscussionResponse(
+                id=d.id,
+                lead_id=d.lead_id,
+                note=d.note,
+                created_at=d.created_at,
+                follow_up_at=d.follow_up_at,
+                is_overdue=d_overdue,
+            )
+        )
 
     return LeadDetail(
         id=lead.id,
@@ -170,6 +214,8 @@ def get_lead_by_id(db: Session, lead_id: int) -> Optional[LeadDetail]:
         updated_at=lead.updated_at,
         discussions=disc_responses,
         next_follow_up=meta["next_follow_up"],
+        is_today_follow_up=meta["is_today_follow_up"],
+        is_overdue=meta["is_overdue"],
     )
 
 
@@ -186,7 +232,9 @@ def create_lead(db: Session, lead_in: LeadCreate) -> LeadDetail:
     db.refresh(new_lead)
 
     # Create initial note if provided, or default creation entry
-    note_content = lead_in.initial_note if lead_in.initial_note else "Lead created via web form."
+    note_content = (
+        lead_in.initial_note if lead_in.initial_note else "Lead created via web form."
+    )
     initial_discussion = Discussion(
         lead_id=new_lead.id,
         note=note_content,
@@ -233,4 +281,17 @@ def add_discussion(
     db.commit()
     db.refresh(discussion)
 
-    return DiscussionResponse.model_validate(discussion)
+    now = datetime.now()
+    is_actionable = lead.status not in (LeadStatus.WON, LeadStatus.LOST)
+    d_overdue = False
+    if discussion.follow_up_at and is_actionable:
+        d_overdue = _safe_dt_compare_past(discussion.follow_up_at, now)
+
+    return DiscussionResponse(
+        id=discussion.id,
+        lead_id=discussion.lead_id,
+        note=discussion.note,
+        created_at=discussion.created_at,
+        follow_up_at=discussion.follow_up_at,
+        is_overdue=d_overdue,
+    )

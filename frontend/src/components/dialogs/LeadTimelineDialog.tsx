@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { LeadDetail, LeadStatus } from '@/types';
 import { api } from '@/lib/api';
@@ -102,21 +103,7 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (isOpen && leadId) {
-      fetchLeadDetails(leadId);
-    } else {
-      setLead(null);
-      setNote('');
-      setSetFollowUp(false);
-      setFollowUpDate('');
-      setFollowUpTime('');
-      setError(null);
-      setStatusDropdownOpen(false);
-    }
-  }, [isOpen, leadId]);
-
-  const fetchLeadDetails = async (id: number) => {
+  const fetchLeadDetails = React.useCallback(async (id: number) => {
     try {
       setLoading(true);
       const data = await api.getLead(id);
@@ -130,6 +117,23 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && leadId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchLeadDetails(leadId);
+    }
+  }, [isOpen, leadId, fetchLeadDetails]);
+
+  const handleClose = () => {
+    setNote('');
+    setSetFollowUp(false);
+    setFollowUpDate('');
+    setFollowUpTime('');
+    setError(null);
+    setStatusDropdownOpen(false);
+    onClose();
   };
 
   const handleStatusChange = async (newStatus: LeadStatus) => {
@@ -148,7 +152,10 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
 
   const handleSaveNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!lead || !note.trim()) return;
+    if (!lead || !note.trim()) {
+      setError('Please enter a discussion note.');
+      return;
+    }
 
     let followUpIso: string | null = null;
     if (setFollowUp && followUpDate) {
@@ -249,7 +256,7 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
 
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="text-gray-400 hover:text-gray-600 p-1 rounded-lg transition-colors"
               aria-label="Close dialog"
             >
@@ -261,8 +268,9 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
         {/* Modal Body / Timeline */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
           {error && (
-            <div className="p-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg">
-              {error}
+            <div className="p-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
@@ -278,12 +286,16 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
                   disc.note.toLowerCase().includes('created via') ||
                   disc.note.toLowerCase().includes('inbound lead');
 
+                const isOverdue = !!disc.is_overdue;
+
                 return (
                   <div key={disc.id} className="relative group">
                     {/* Timeline bullet */}
                     <div
                       className={`absolute -left-6 top-1.5 w-3 h-3 rounded-full border-2 border-white ring-2 ${
-                        isLatest
+                        isOverdue
+                          ? 'bg-red-600 ring-red-200'
+                          : isLatest
                           ? 'bg-blue-600 ring-blue-200'
                           : 'bg-gray-300 ring-gray-100'
                       }`}
@@ -310,10 +322,21 @@ export const LeadTimelineDialog: React.FC<LeadTimelineDialogProps> = ({
                       </p>
 
                       {disc.follow_up_at && (
-                        <div className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-xs font-medium">
-                          <Calendar className="w-3.5 h-3.5" />
+                        <div
+                          className={`inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-md text-xs font-medium border ${
+                            isOverdue
+                              ? 'bg-red-50 border-red-200 text-red-700'
+                              : 'bg-blue-50 border-blue-200 text-blue-700'
+                          }`}
+                        >
+                          {isOverdue ? (
+                            <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                          ) : (
+                            <Calendar className="w-3.5 h-3.5" />
+                          )}
                           <span>
-                            Follow-up set for: {formatFollowUpDate(disc.follow_up_at)}
+                            {isOverdue ? 'Follow-up overdue: ' : 'Follow-up set for: '}
+                            {formatFollowUpDate(disc.follow_up_at)}
                           </span>
                         </div>
                       )}

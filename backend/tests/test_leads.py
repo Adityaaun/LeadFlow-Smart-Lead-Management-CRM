@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, timedelta
 import pytest
 
 
@@ -24,7 +24,6 @@ def test_create_lead_default_status(client):
     assert data["company"] == "Wayne Enterprises"
     assert data["phone"] == "555-0100"
     assert data["status"] == "New"
-    # Should automatically have initial discussion entry
     assert len(data["discussions"]) == 1
     assert "web form" in data["discussions"][0]["note"].lower()
 
@@ -43,17 +42,37 @@ def test_create_lead_with_custom_note(client):
     assert data["discussions"][0]["note"] == "Referred by Perry White."
 
 
-def test_validation_missing_name(client):
-    payload = {
-        "company": "No Name Corp",
-    }
-    response = client.post("/api/leads", json=payload)
-    assert response.status_code == 422
+def test_validation_missing_or_whitespace_name(client):
+    # Missing name
+    res1 = client.post("/api/leads", json={"company": "No Name Corp"})
+    assert res1.status_code == 422
+
+    # Whitespace-only name
+    res2 = client.post("/api/leads", json={"name": "   ", "company": "Spaces Inc"})
+    assert res2.status_code == 422
+    assert "blank" in res2.text.lower() or "whitespace" in res2.text.lower()
+
+
+def test_validation_blank_discussion_note(client):
+    lead = client.post("/api/leads", json={"name": "Diana Prince"}).json()
+    lead_id = lead["id"]
+
+    # Blank note
+    res = client.post(f"/api/leads/{lead_id}/discussions", json={"note": "   "})
+    assert res.status_code == 422
+    assert "blank" in res.text.lower() or "whitespace" in res.text.lower()
+
+
+def test_validation_invalid_status(client):
+    lead = client.post("/api/leads", json={"name": "Hal Jordan"}).json()
+    lead_id = lead["id"]
+
+    res = client.patch(f"/api/leads/{lead_id}/status", json={"status": "NonExistentStatus"})
+    assert res.status_code == 422
 
 
 def test_list_and_filter_leads(client):
-    # Create two leads with different status
-    lead1 = client.post("/api/leads", json={"name": "Alice Smith", "company": "Alpha Inc"}).json()
+    client.post("/api/leads", json={"name": "Alice Smith", "company": "Alpha Inc"}).json()
     lead2 = client.post("/api/leads", json={"name": "Bob Jones", "company": "Beta LLC"}).json()
 
     # Update lead2 status to Qualified
@@ -84,19 +103,27 @@ def test_search_leads(client):
     client.post("/api/leads", json={"name": "Tony Stark", "company": "Stark Industries"}).json()
     client.post("/api/leads", json={"name": "Peter Parker", "company": "Daily Bugle"}).json()
 
-    # Search by name
-    res = client.get("/api/leads?search=stark")
+    # Search by full name
+    res = client.get("/api/leads?search=Tony Stark")
     assert res.status_code == 200
-    data = res.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Tony Stark"
+    assert len(res.json()) == 1
+
+    # Search by partial name
+    res2 = client.get("/api/leads?search=stark")
+    assert res2.status_code == 200
+    assert len(res2.json()) == 1
+    assert res2.json()[0]["name"] == "Tony Stark"
 
     # Search by company
-    res2 = client.get("/api/leads?search=bugle")
-    assert res2.status_code == 200
-    data2 = res2.json()
-    assert len(data2) == 1
-    assert data2[0]["name"] == "Peter Parker"
+    res3 = client.get("/api/leads?search=bugle")
+    assert res3.status_code == 200
+    assert len(res3.json()) == 1
+    assert res3.json()[0]["name"] == "Peter Parker"
+
+    # Search clear / empty
+    res4 = client.get("/api/leads?search=")
+    assert res4.status_code == 200
+    assert len(res4.json()) >= 2
 
 
 def test_get_lead_details(client):
@@ -141,11 +168,65 @@ def test_add_discussion_and_today_followup(client):
     assert followup_data[0]["is_today_follow_up"] is True
 
 
-def test_update_status(client):
+def test_future_followup_not_in_today(client):
+    lead = client.post("/api/leads", json={"name": "Future Lead"}).json()
+    tomorrow_str = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%dT14:00:00")
+
+    client.post(f"/api/leads/{lead['id']}/discussions", json={
+        "note": "Call scheduled for next week",
+        "follow_up_at": tomorrow_str,
+    })
+
+    followups = client.get("/api/leads/today-followups").json()
+    lead_ids = [l["id"] for l in followups]
+    assert lead["id"] not in lead_ids
+
+
+def test_won_or_lost_leads_excluded_from_actionable_followups(client):
+    lead = client.post("/api/leads", json={"name": "Closed Lead"}).json()
+    today_str = datetime.now().strftime("%Y-%m-%dT14:00:00")
+
+    client.post(f"/api/leads/{lead['id']}/discussions", json={
+        "note": "Signed deal follow-up",
+        "follow_up_at": today_str,
+    })
+
+    # Initially in today's followups
+    res1 = client.get("/api/leads/today-followups").json()
+    assert any(l["id"] == lead["id"] for l in res1)
+
+    # Now mark as Won
+    client.patch(f"/api/leads/{lead['id']}/status", json={"status": "Won"})
+
+    # Should no longer be presented as an actionable follow-up
+    res2 = client.get("/api/leads/today-followups").json()
+    assert not any(l["id"] == lead["id"] for l in res2)
+
+
+def test_overdue_followup_detection(client):
+    lead = client.post("/api/leads", json={"name": "Overdue Lead"}).json()
+    past_time = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    client.post(f"/api/leads/{lead['id']}/discussions", json={
+        "note": "Call was missed",
+        "follow_up_at": past_time,
+    })
+
+    lead_detail = client.get(f"/api/leads/{lead['id']}").json()
+    assert lead_detail["is_overdue"] is True
+    assert lead_detail["discussions"][0]["is_overdue"] is True
+
+
+def test_update_status_transitions(client):
     lead = client.post("/api/leads", json={"name": "Hank Scorpio", "company": "Globex"}).json()
     lead_id = lead["id"]
 
-    update_res = client.patch(f"/api/leads/{lead_id}/status", json={"status": "Won"})
-    assert update_res.status_code == 200
-    data = update_res.json()
-    assert data["status"] == "Won"
+    # Transition New -> Contacted
+    res1 = client.patch(f"/api/leads/{lead_id}/status", json={"status": "Contacted"})
+    assert res1.status_code == 200
+    assert res1.json()["status"] == "Contacted"
+
+    # Transition Contacted -> Qualified
+    res2 = client.patch(f"/api/leads/{lead_id}/status", json={"status": "Qualified"})
+    assert res2.status_code == 200
+    assert res2.json()["status"] == "Qualified"

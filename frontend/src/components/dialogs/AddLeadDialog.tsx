@@ -26,7 +26,7 @@ export const AddLeadDialog: React.FC<AddLeadDialogProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError('Full name is required.');
+      setError('Full name is required and cannot be blank.');
       return;
     }
 

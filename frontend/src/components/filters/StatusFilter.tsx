@@ -1,5 +1,4 @@
 import React from 'react';
-import { LeadStatus } from '@/types';
 
 interface StatusFilterProps {
   selectedStatus: string;

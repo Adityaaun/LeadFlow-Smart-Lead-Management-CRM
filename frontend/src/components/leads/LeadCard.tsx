@@ -1,6 +1,6 @@
 import React from 'react';
 import { LeadListItem, LeadStatus } from '@/types';
-import { Bell } from 'lucide-react';
+import { Bell, AlertCircle } from 'lucide-react';
 
 interface LeadCardProps {
   lead: LeadListItem;
@@ -21,6 +21,15 @@ function formatTimeOnly(dateString: string): string {
   try {
     const d = new Date(dateString);
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function formatShortDate(dateString: string): string {
+  try {
+    const d = new Date(dateString);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   } catch {
     return '';
   }
@@ -51,6 +60,8 @@ export const LeadCard: React.FC<LeadCardProps> = ({ lead, onClick, isPinned = fa
   const statusClass =
     STATUS_STYLES[lead.status] || 'bg-gray-50 text-gray-700 border-gray-200';
 
+  const isOverdue = !!lead.is_overdue;
+
   return (
     <div
       onClick={onClick}
@@ -63,7 +74,9 @@ export const LeadCard: React.FC<LeadCardProps> = ({ lead, onClick, isPinned = fa
         }
       }}
       className={`w-full text-left p-5 rounded-xl border transition-all cursor-pointer shadow-xs hover:shadow-md ${
-        isPinned
+        isOverdue && isPinned
+          ? 'bg-red-50/40 border-red-200 hover:border-red-300'
+          : isPinned
           ? 'bg-blue-50/50 border-blue-200 hover:border-blue-300'
           : 'bg-white border-gray-200 hover:border-gray-300'
       }`}
@@ -96,10 +109,29 @@ export const LeadCard: React.FC<LeadCardProps> = ({ lead, onClick, isPinned = fa
         </p>
       )}
 
-      {isPinned && lead.next_follow_up && (
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-100/70 border border-blue-200 rounded-lg text-xs font-medium text-blue-800 mt-1">
-          <Bell className="w-3.5 h-3.5 text-blue-700" />
-          <span>Follow-up today at {formatTimeOnly(lead.next_follow_up)}</span>
+      {/* Actionable Follow-up Tag */}
+      {lead.next_follow_up && (isPinned || isOverdue) && (
+        <div
+          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium mt-1 border ${
+            isOverdue
+              ? 'bg-red-50 border-red-200 text-red-700'
+              : 'bg-blue-100/70 border-blue-200 text-blue-800'
+          }`}
+        >
+          {isOverdue ? (
+            <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+          ) : (
+            <Bell className="w-3.5 h-3.5 text-blue-700" />
+          )}
+          <span>
+            {isOverdue
+              ? `Follow-up overdue (${
+                  lead.is_today_follow_up
+                    ? `today at ${formatTimeOnly(lead.next_follow_up)}`
+                    : `${formatShortDate(lead.next_follow_up)} at ${formatTimeOnly(lead.next_follow_up)}`
+                })`
+              : `Follow-up today at ${formatTimeOnly(lead.next_follow_up)}`}
+          </span>
         </div>
       )}
     </div>

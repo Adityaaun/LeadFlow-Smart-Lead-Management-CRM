@@ -12,6 +12,7 @@ export interface Discussion {
   note: string;
   created_at: string;
   follow_up_at?: string | null;
+  is_overdue?: boolean;
 }
 
 export interface LeadListItem {
@@ -26,6 +27,7 @@ export interface LeadListItem {
   last_note_created_at?: string | null;
   next_follow_up?: string | null;
   is_today_follow_up: boolean;
+  is_overdue?: boolean;
 }
 
 export interface LeadDetail {
@@ -38,6 +40,8 @@ export interface LeadDetail {
   updated_at: string;
   discussions: Discussion[];
   next_follow_up?: string | null;
+  is_today_follow_up?: boolean;
+  is_overdue?: boolean;
 }
 
 export interface CreateLeadPayload {

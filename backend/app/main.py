@@ -4,12 +4,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
 from backend.app.core.database import engine, Base
 from backend.app.api import api_router
+from backend.app.seed import seed_database
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Ensure database tables exist on startup
     Base.metadata.create_all(bind=engine)
+    # Populate seed data if database is empty (skips automatically if data exists)
+    try:
+        seed_database()
+    except Exception as e:
+        print(f"Warning during seed check: {e}")
     yield
 
 
