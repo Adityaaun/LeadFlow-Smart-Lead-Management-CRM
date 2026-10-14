@@ -56,11 +56,33 @@ export default function DashboardPage() {
     return () => clearTimeout(timer);
   }, [loadData]);
 
-  // Exclude leads already shown in pinned today's follow-ups so no lead appears twice
+  // Consistent search & filter behavior for pinned today's follow-ups:
+  // Pinned follow-ups honor the active search query (name, company, phone)
+  // and the active status filter (when not 'All').
+  const displayedPinnedFollowUps = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return todayFollowUps.filter((lead) => {
+      const matchesStatus =
+        selectedStatus === 'All' ||
+        lead.status.toLowerCase() === selectedStatus.toLowerCase();
+
+      const matchesSearch =
+        !query ||
+        lead.name.toLowerCase().includes(query) ||
+        (lead.company ? lead.company.toLowerCase().includes(query) : false) ||
+        (lead.phone ? lead.phone.toLowerCase().includes(query) : false);
+
+      return matchesStatus && matchesSearch;
+    });
+  }, [todayFollowUps, selectedStatus, searchTerm]);
+
+  // Exclude ONLY leads that are ACTUALLY DISPLAYED in the pinned today's follow-ups section.
+  // This ensures a lead is never accidentally hidden from both sections when filters/search
+  // are active, while strictly preserving deduplication when displayed in pinned.
   const mainListLeads = useMemo(() => {
-    const pinnedIds = new Set(todayFollowUps.map((l) => l.id));
-    return leads.filter((lead) => !pinnedIds.has(lead.id));
-  }, [leads, todayFollowUps]);
+    const displayedPinnedIds = new Set(displayedPinnedFollowUps.map((l) => l.id));
+    return leads.filter((lead) => !displayedPinnedIds.has(lead.id));
+  }, [leads, displayedPinnedFollowUps]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-gray-900">
@@ -101,7 +123,7 @@ export default function DashboardPage() {
 
         {/* Pinned Today's Follow-ups */}
         <TodayFollowUps
-          leads={todayFollowUps}
+          leads={displayedPinnedFollowUps}
           onSelectLead={(lead) => setSelectedLeadId(lead.id)}
         />
 

@@ -230,3 +230,99 @@ def test_update_status_transitions(client):
     res2 = client.patch(f"/api/leads/{lead_id}/status", json={"status": "Qualified"})
     assert res2.status_code == 200
     assert res2.json()["status"] == "Qualified"
+
+
+def test_multiple_discussions_older_today_newer_different_day_superseded(client):
+    """Ensure older follow-up scheduled today is superseded by newer discussion scheduled for another day."""
+    lead = client.post("/api/leads", json={"name": "Rescheduled Lead"}).json()
+    lead_id = lead["id"]
+
+    today_str = datetime.now().strftime("%Y-%m-%dT14:00:00")
+    tomorrow_str = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%dT10:00:00")
+
+    # Older discussion with follow-up scheduled for today
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Scheduled meeting for today.",
+        "follow_up_at": today_str,
+    })
+
+    # Verify initially present in today-followups
+    today_res = client.get("/api/leads/today-followups").json()
+    assert any(l["id"] == lead_id for l in today_res)
+
+    # Newer discussion rescheduling follow-up to two days later
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Client asked to postpone to Thursday.",
+        "follow_up_at": tomorrow_str,
+    })
+
+    # Lead MUST NO LONGER appear in today's followups because the active follow-up is Thursday
+    today_res2 = client.get("/api/leads/today-followups").json()
+    assert not any(l["id"] == lead_id for l in today_res2)
+
+    # In lead detail, active next_follow_up must match the newer date
+    detail = client.get(f"/api/leads/{lead_id}").json()
+    assert detail["next_follow_up"] == tomorrow_str
+    assert detail["is_today_follow_up"] is False
+
+
+def test_multiple_discussions_older_different_day_newer_today(client):
+    """Ensure newer discussion scheduling follow-up for today activates today-followup even if older was another day."""
+    lead = client.post("/api/leads", json={"name": "Moved Up Lead"}).json()
+    lead_id = lead["id"]
+
+    future_str = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%dT10:00:00")
+    today_str = datetime.now().strftime("%Y-%m-%dT16:00:00")
+
+    # Older discussion scheduled for next week
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Tentative next week chat.",
+        "follow_up_at": future_str,
+    })
+
+    # Not in today's followups
+    assert not any(l["id"] == lead_id for l in client.get("/api/leads/today-followups").json())
+
+    # Newer discussion moving follow-up to today
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Client called back, wants to talk this afternoon!",
+        "follow_up_at": today_str,
+    })
+
+    # Now MUST appear in today's followups
+    today_list = client.get("/api/leads/today-followups").json()
+    matched = [l for l in today_list if l["id"] == lead_id]
+    assert len(matched) == 1
+    assert matched[0]["is_today_follow_up"] is True
+    assert matched[0]["next_follow_up"] == today_str
+
+
+def test_multiple_discussions_general_note_preserves_active_followup(client):
+    """Ensure logging a note without a follow-up date does not erase the existing active follow-up."""
+    lead = client.post("/api/leads", json={"name": "Preserved Followup Lead"}).json()
+    lead_id = lead["id"]
+
+    today_str = datetime.now().strftime("%Y-%m-%dT15:30:00")
+
+    # Discussion with follow-up scheduled for today
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Follow up scheduled for this afternoon.",
+        "follow_up_at": today_str,
+    })
+
+    # Discussion logging a simple comment without changing follow-up
+    client.post(f"/api/leads/{lead_id}/discussions", json={
+        "note": "Checked lead LinkedIn profile.",
+        "follow_up_at": None,
+    })
+
+    # Lead should still have today's follow-up as active
+    detail = client.get(f"/api/leads/{lead_id}").json()
+    assert detail["next_follow_up"] == today_str
+    assert detail["is_today_follow_up"] is True
+    assert detail["discussions"][0]["note"] == "Checked lead LinkedIn profile."
+
+    # In leads list, last_note reflects newest discussion note
+    list_item = next(l for l in client.get("/api/leads").json() if l["id"] == lead_id)
+    assert list_item["last_note"] == "Checked lead LinkedIn profile."
+    assert list_item["is_today_follow_up"] is True

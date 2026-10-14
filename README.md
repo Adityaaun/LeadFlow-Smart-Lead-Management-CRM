@@ -49,7 +49,7 @@ leadflow/
 │   │   └── seed.py          # Initial sample data seeder
 │   ├── tests/
 │   │   ├── conftest.py      # Pytest fixtures and isolated in-memory DB
-│   │   └── test_leads.py    # 15 automated unit and integration tests
+│   │   └── test_leads.py    # 18 automated unit and integration tests
 │   ├── requirements.txt     # Python backend dependencies
 │   └── Dockerfile           # Backend container definition
 ├── frontend/
@@ -63,7 +63,7 @@ leadflow/
 │   │   ├── lib/             # Strongly-typed API client (api.ts)
 │   │   └── types/           # Shared TypeScript interfaces
 │   ├── package.json         # Frontend dependencies and npm scripts
-│   └── Dockerfile           # Multi-stage production container build
+│   └── Dockerfile           # Multi-stage node:22-alpine production build (npm start)
 ├── docs/
 │   ├── reference/           # Original PravarAI assessment design mockups
 │   ├── screenshots/         # Verified browser verification screenshots
@@ -78,7 +78,7 @@ leadflow/
 
 ## Prerequisites
 
-- **Node.js**: `v18.0.0` or higher (`v22.x` recommended)
+- **Node.js**: `v22.x` (matching the Docker container) or `v18.0.0+`
 - **Python**: `v3.10.0` or higher
 - **npm**: `v9.x` or higher
 - **Docker Desktop**: (Optional, for containerized run)
@@ -187,6 +187,8 @@ docker compose up --build -d
 - Frontend: `http://localhost:3000`
 - Backend API & Swagger: `http://localhost:8000/api/docs`
 - Database data is persisted across container restarts in the `leadflow-data` volume.
+- The frontend container uses a multi-stage `node:22-alpine` build that compiles the Next.js application (`npm run build`), bundles production dependencies, and serves the application via `npm start`.
+- Build context sizes are optimized using `.dockerignore` files for both frontend and backend contexts.
 
 To stop the containers:
 ```bash
@@ -197,7 +199,7 @@ docker compose down
 
 ## Running Automated Tests
 
-The backend test suite runs 15 unit and integration tests against an isolated, in-memory SQLite database:
+The backend test suite runs 18 unit and integration tests against an isolated, in-memory SQLite database:
 
 ```bash
 # Windows (PowerShell)

@@ -30,7 +30,21 @@ def _safe_dt_is_today(dt: datetime, today_date: date) -> bool:
 
 
 def _derive_lead_metadata(lead: Lead) -> dict:
-    """Derive last note, note timestamp, next follow-up, is_today_follow_up, and is_overdue."""
+    """Derive last note, note timestamp, next follow-up, is_today_follow_up, and is_overdue.
+
+    Active Follow-Up Rule:
+    The active follow-up for a lead is determined by the most recent discussion that specified
+    a follow_up_at date/time (discussions ordered by created_at descending, tie-broken by id descending).
+    Any older follow-up date is considered superseded by more recent discussions.
+
+    Actionable Today Follow-Up Rule:
+    A lead has an actionable today follow-up (is_today_follow_up=True) if and only if:
+    1. The lead's status is actionable (status not in [Won, Lost]).
+    2. The lead's active next_follow_up falls on today's local calendar date.
+
+    Overdue Rule:
+    An active follow-up is overdue if it is actionable and its datetime is earlier than datetime.now().
+    """
     last_note = None
     last_note_created_at = None
     next_follow_up = None
@@ -52,7 +66,7 @@ def _derive_lead_metadata(lead: Lead) -> dict:
         last_note = latest_disc.note
         last_note_created_at = latest_disc.created_at
 
-        # Find the most relevant scheduled follow-up
+        # Find the most relevant active scheduled follow-up
         for d in sorted_discussions:
             if d.follow_up_at:
                 next_follow_up = d.follow_up_at
@@ -126,18 +140,13 @@ def get_leads(
 
 
 def get_today_followups(db: Session) -> List[LeadListItem]:
-    """Retrieve active leads that have follow-ups scheduled for today (excluding Won and Lost)."""
-    today = datetime.now().date()
-    start_of_day = datetime.combine(today, time.min)
-    end_of_day = datetime.combine(today, time.max)
-
-    # Find leads with discussions having follow_up_at today, excluding completed/lost leads
+    """Retrieve active leads whose currently active follow-up is scheduled for today (excluding Won and Lost)."""
+    # Find candidate leads that have discussions with follow-ups, excluding completed/lost leads
     leads = (
         db.query(Lead)
         .join(Discussion)
         .filter(
-            Discussion.follow_up_at >= start_of_day,
-            Discussion.follow_up_at <= end_of_day,
+            Discussion.follow_up_at.isnot(None),
             Lead.status.notin_([LeadStatus.WON, LeadStatus.LOST]),
         )
         .options(joinedload(Lead.discussions))
@@ -148,22 +157,29 @@ def get_today_followups(db: Session) -> List[LeadListItem]:
     result: List[LeadListItem] = []
     for lead in leads:
         meta = _derive_lead_metadata(lead)
-        result.append(
-            LeadListItem(
-                id=lead.id,
-                name=lead.name,
-                company=lead.company,
-                phone=lead.phone,
-                status=lead.status,
-                created_at=lead.created_at,
-                updated_at=lead.updated_at,
-                last_note=meta["last_note"],
-                last_note_created_at=meta["last_note_created_at"],
-                next_follow_up=meta["next_follow_up"],
-                is_today_follow_up=True,
-                is_overdue=meta["is_overdue"],
+        # Consistent Rule: Only include leads whose ACTIVE follow-up is actually scheduled for today.
+        # This guarantees that if an older discussion scheduled a follow-up for today, but a newer
+        # discussion rescheduled it to another day, the lead will NOT be returned here.
+        if meta["is_today_follow_up"]:
+            result.append(
+                LeadListItem(
+                    id=lead.id,
+                    name=lead.name,
+                    company=lead.company,
+                    phone=lead.phone,
+                    status=lead.status,
+                    created_at=lead.created_at,
+                    updated_at=lead.updated_at,
+                    last_note=meta["last_note"],
+                    last_note_created_at=meta["last_note_created_at"],
+                    next_follow_up=meta["next_follow_up"],
+                    is_today_follow_up=True,
+                    is_overdue=meta["is_overdue"],
+                )
             )
-        )
+
+    # Sort today's follow-ups chronologically by active follow-up time
+    result.sort(key=lambda item: (item.next_follow_up or datetime.max, item.id))
     return result
 
 
